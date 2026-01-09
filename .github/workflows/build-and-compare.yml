@@ -8,188 +8,226 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-images:
+  # Job 1: Discover all Dockerfiles and create the build matrix
+  discover:
     runs-on: ubuntu-latest
     outputs:
-      results: ${{ steps.build.outputs.results }}
+      matrix: ${{ steps.find.outputs.matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build all Docker images and collect sizes
-        id: build
+      - name: Find all Dockerfiles
+        id: find
         run: |
-          # Function to get image size
-          get_image_size() {
-            docker images --format "{{.Size}}" "$1" 2>/dev/null || echo "N/A"
-          }
-          
-          # Function to build image and return size
-          build_and_get_size() {
-            local dockerfile_path="$1"
-            local image_name="$2"
-            local context_dir=$(dirname "$dockerfile_path")
-            
-            if [ -f "$dockerfile_path" ]; then
-              echo "  ⏳ Building $dockerfile_path..."
-              if docker build -t "$image_name" -f "$dockerfile_path" "$context_dir" > /dev/null 2>&1; then
-                get_image_size "$image_name"
-              else
-                echo "Build Failed"
-              fi
-            else
-              echo "N/A"
-            fi
-          }
-          
-          # Find all Dockerfiles dynamically (excluding .old files)
-          echo "🔍 Searching for Dockerfiles..."
+          # Find all Dockerfiles (excluding .old files)
           DOCKERFILES=$(find . -type f \( -iname "dockerfile" -o -iname "Dockerfile" \) ! -iname "*.old" | sort)
           
           echo "Found Dockerfiles:"
           echo "$DOCKERFILES"
-          echo ""
           
-          # Create results JSON array
-          echo "Building all Docker images..."
-          JSON_RESULTS="["
+          # Build JSON matrix
+          MATRIX_JSON="["
           FIRST=true
           
           for dockerfile in $DOCKERFILES; do
-            # Get directory path without ./ prefix
             dir=$(dirname "$dockerfile" | sed 's|^\./||')
             dockerfile_name=$(basename "$dockerfile")
             
-            echo "📦 Building $dir..."
-            
-            # Determine the .old dockerfile name (try both cases)
+            # Check for .old dockerfile
+            HAS_OLD="false"
             OLD_DOCKERFILE=""
             if [ -f "$dir/${dockerfile_name}.old" ]; then
-              OLD_DOCKERFILE="$dir/${dockerfile_name}.old"
+              HAS_OLD="true"
+              OLD_DOCKERFILE="${dockerfile_name}.old"
             elif [ -f "$dir/Dockerfile.old" ]; then
-              OLD_DOCKERFILE="$dir/Dockerfile.old"
+              HAS_OLD="true"
+              OLD_DOCKERFILE="Dockerfile.old"
             elif [ -f "$dir/dockerfile.old" ]; then
-              OLD_DOCKERFILE="$dir/dockerfile.old"
+              HAS_OLD="true"
+              OLD_DOCKERFILE="dockerfile.old"
             fi
             
-            # Build old image
-            OLD_SIZE="❌"
-            if [ -n "$OLD_DOCKERFILE" ]; then
-              OLD_SIZE=$(build_and_get_size "$OLD_DOCKERFILE" "test-old-${dir//\//-}")
-              echo "  📊 Old size: $OLD_SIZE"
-            else
-              echo "  ⚠️ No .old dockerfile found"
-            fi
-            
-            # Build optimized image
-            NEW_SIZE=$(build_and_get_size "$dockerfile" "test-new-${dir//\//-}")
-            echo "  📊 New size: $NEW_SIZE"
-            
-            # Add to JSON
             if [ "$FIRST" = true ]; then
               FIRST=false
             else
-              JSON_RESULTS+=","
+              MATRIX_JSON+=","
             fi
-            JSON_RESULTS+="{\"name\":\"$dir\",\"old_size\":\"$OLD_SIZE\",\"new_size\":\"$NEW_SIZE\"}"
             
-            echo "  ✅ Done!"
-            echo ""
+            MATRIX_JSON+="{\"dir\":\"$dir\",\"dockerfile\":\"$dockerfile_name\",\"has_old\":$HAS_OLD,\"old_dockerfile\":\"$OLD_DOCKERFILE\"}"
           done
           
-          JSON_RESULTS+="]"
+          MATRIX_JSON+="]"
           
-          # Save results to output
-          echo "results=$JSON_RESULTS" >> $GITHUB_OUTPUT
+          echo "Matrix JSON:"
+          echo "$MATRIX_JSON"
           
-          # Also save to file for the next step
-          echo "$JSON_RESULTS" > build-results.json
-          
-          echo "🎉 All builds completed!"
+          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
-      - name: Upload build results
+  # Job 2: Build each Dockerfile in parallel
+  build:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build optimized Dockerfile
+        id: build_new
+        run: |
+          echo "📦 Building ${{ matrix.dir }}/${{ matrix.dockerfile }}..."
+          
+          IMAGE_NAME="test-new-$(echo '${{ matrix.dir }}' | tr '/' '-')"
+          
+          if docker build -t "$IMAGE_NAME" -f "${{ matrix.dir }}/${{ matrix.dockerfile }}" "${{ matrix.dir }}"; then
+            SIZE=$(docker images --format "{{.Size}}" "$IMAGE_NAME")
+            echo "size=$SIZE" >> $GITHUB_OUTPUT
+            echo "✅ Built successfully: $SIZE"
+          else
+            echo "size=Build Failed" >> $GITHUB_OUTPUT
+            echo "❌ Build failed"
+          fi
+
+      - name: Build old Dockerfile
+        id: build_old
+        if: matrix.has_old == true
+        run: |
+          echo "📦 Building ${{ matrix.dir }}/${{ matrix.old_dockerfile }}..."
+          
+          IMAGE_NAME="test-old-$(echo '${{ matrix.dir }}' | tr '/' '-')"
+          
+          if docker build -t "$IMAGE_NAME" -f "${{ matrix.dir }}/${{ matrix.old_dockerfile }}" "${{ matrix.dir }}"; then
+            SIZE=$(docker images --format "{{.Size}}" "$IMAGE_NAME")
+            echo "size=$SIZE" >> $GITHUB_OUTPUT
+            echo "✅ Built successfully: $SIZE"
+          else
+            echo "size=Build Failed" >> $GITHUB_OUTPUT
+            echo "❌ Build failed"
+          fi
+
+      - name: Save results
+        run: |
+          mkdir -p results
+          
+          NEW_SIZE="${{ steps.build_new.outputs.size }}"
+          OLD_SIZE="${{ steps.build_old.outputs.size }}"
+          
+          # If no old dockerfile, mark as ❌
+          if [ "${{ matrix.has_old }}" != "true" ]; then
+            OLD_SIZE="❌"
+          fi
+          
+          # Create result JSON with safe filename
+          SAFE_NAME=$(echo '${{ matrix.dir }}' | tr '/' '-')
+          echo "{\"name\":\"${{ matrix.dir }}\",\"old_size\":\"$OLD_SIZE\",\"new_size\":\"$NEW_SIZE\"}" > "results/${SAFE_NAME}.json"
+
+      - name: Upload result artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-results
-          path: build-results.json
+          name: result-${{ strategy.job-index }}
+          path: results/*.json
 
+  # Job 3: Aggregate results and update README
   update-readme:
-    needs: build-images
+    needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: always()
     permissions:
       contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download build results
+      - name: Download all result artifacts
         uses: actions/download-artifact@v4
         with:
-          name: build-results
+          pattern: result-*
+          path: all-results
+          merge-multiple: true
 
-      - name: Update README with results
+      - name: Aggregate results and generate table
+        id: aggregate
         run: |
-          # Read results
-          RESULTS=$(cat build-results.json)
+          echo "📊 Aggregating results..."
           
-          # Generate markdown table
-          TABLE="| Imagen | Dockerfile.old | Dockerfile (Optimizado) |\n"
-          TABLE+="|--------|----------------|-------------------------|\n"
+          # Combine all JSON files into one array
+          COMBINED="["
+          FIRST=true
           
-          # Parse JSON and create table rows
-          echo "$RESULTS" | jq -r '.[] | "| \(.name) | \(.old_size) | \(.new_size) |"' | while read line; do
-            TABLE+="$line\n"
+          for file in all-results/*.json; do
+            if [ -f "$file" ]; then
+              CONTENT=$(cat "$file")
+              if [ "$FIRST" = true ]; then
+                FIRST=false
+              else
+                COMBINED+=","
+              fi
+              COMBINED+="$CONTENT"
+            fi
           done
           
-          # Create the full table with jq
-          FULL_TABLE=$(echo "$RESULTS" | jq -r '
+          COMBINED+="]"
+          
+          echo "Combined results:"
+          echo "$COMBINED" | jq .
+          
+          # Sort by name and generate table
+          FULL_TABLE=$(echo "$COMBINED" | jq -r '
+            sort_by(.name) |
             "| Imagen | Dockerfile.old | Dockerfile (Optimizado) |\n|--------|----------------|-------------------------|\n" + 
             (map("| \(.name) | \(.old_size) | \(.new_size) |") | join("\n"))
           ')
           
-          # Read current README
-          README_CONTENT=$(cat README.md)
+          echo "Generated table:"
+          echo "$FULL_TABLE"
+          
+          # Save table to file for next step
+          echo "$FULL_TABLE" > table.md
+
+      - name: Update README
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          FULL_TABLE=$(cat table.md)
           
           # Check if the results section already exists
           if grep -q "<!-- DOCKER_BUILD_RESULTS_START -->" README.md; then
-            # Replace existing section
-            awk '
-              /<!-- DOCKER_BUILD_RESULTS_START -->/ {
-                print
-                print ""
-                print "'"$(echo "$FULL_TABLE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')"'"
-                print ""
-                skip=1
-                next
-              }
-              /<!-- DOCKER_BUILD_RESULTS_END -->/ {
-                skip=0
-              }
-              !skip {print}
-            ' README.md > README.tmp && mv README.tmp README.md
+            # Create new content between markers
+            {
+              sed -n '1,/<!-- DOCKER_BUILD_RESULTS_START -->/p' README.md
+              echo ""
+              echo "$FULL_TABLE"
+              echo ""
+              sed -n '/<!-- DOCKER_BUILD_RESULTS_END -->/,$p' README.md
+            } > README.tmp && mv README.tmp README.md
           else
-            # Append new section at the end
+            # Append new section before "How contribute" section
             echo "" >> README.md
             echo "## 📊 Comparativa de tamaños de imágenes Docker" >> README.md
             echo "" >> README.md
-            echo "Esta tabla muestra la diferencia de tamaño entre los Dockerfiles sin optimizar (\`.old\`) y los Dockerfiles optimizados con multi-stage builds y mejores prácticas." >> README.md
+            echo "Esta tabla muestra la diferencia de tamaño entre los Dockerfiles sin optimizar (\`.old\`) y los Dockerfiles optimizados." >> README.md
             echo "" >> README.md
             echo "<!-- DOCKER_BUILD_RESULTS_START -->" >> README.md
             echo "" >> README.md
             echo "$FULL_TABLE" >> README.md
             echo "" >> README.md
             echo "<!-- DOCKER_BUILD_RESULTS_END -->" >> README.md
-            echo "" >> README.md
-            echo "> 🤝 **¿Quieres contribuir?** Añade tus propios ejemplos y ayuda a la comunidad a ver el impacto de las buenas prácticas en Docker." >> README.md
-            echo "" >> README.md
-            echo "_Última actualización: $(date -u '+%Y-%m-%d %H:%M:%S UTC')_" >> README.md
           fi
+          
+          echo "README updated!"
 
       - name: Commit and push changes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add README.md
-          git diff --staged --quiet || git commit -m "📊 Update Docker image size comparison table"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "📊 Update Docker image size comparison table"
+            git push
+          fi
