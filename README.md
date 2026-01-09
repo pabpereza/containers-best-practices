@@ -46,6 +46,24 @@ docker run -it <image_name>
 
 
 
+## 📊 Comparativa de tamaños de imágenes Docker
+
+Esta tabla muestra la diferencia de tamaño entre los Dockerfiles sin optimizar (`.old`) y los Dockerfiles optimizados con multi-stage builds y mejores prácticas.
+
+<!-- DOCKER_BUILD_RESULTS_START -->
+
+| Imagen | Dockerfile.old | Dockerfile (Optimizado) |
+|--------|----------------|-------------------------|
+| _Pendiente de ejecución del workflow_ | - | - |
+
+<!-- DOCKER_BUILD_RESULTS_END -->
+
+> 🤝 **¿Quieres contribuir?** Añade tus propios ejemplos y ayuda a la comunidad a ver el impacto de las buenas prácticas en Docker. ¡La tabla se actualiza automáticamente con cada push!
+
+_Los valores se actualizan automáticamente mediante GitHub Actions._
+
+---
+
 # How contribute to this repository
 If you want to contribute to this repository, please follow these steps:
 1. Fork this repository

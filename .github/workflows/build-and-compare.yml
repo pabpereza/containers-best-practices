@@ -1,0 +1,195 @@
+name: Build and Compare Docker Images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.build.outputs.results }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build all Docker images and collect sizes
+        id: build
+        run: |
+          # Function to get image size
+          get_image_size() {
+            docker images --format "{{.Size}}" "$1" 2>/dev/null || echo "N/A"
+          }
+          
+          # Function to build image and return size
+          build_and_get_size() {
+            local dockerfile_path="$1"
+            local image_name="$2"
+            local context_dir=$(dirname "$dockerfile_path")
+            
+            if [ -f "$dockerfile_path" ]; then
+              echo "  ⏳ Building $dockerfile_path..."
+              if docker build -t "$image_name" -f "$dockerfile_path" "$context_dir" > /dev/null 2>&1; then
+                get_image_size "$image_name"
+              else
+                echo "Build Failed"
+              fi
+            else
+              echo "N/A"
+            fi
+          }
+          
+          # Find all Dockerfiles dynamically (excluding .old files)
+          echo "🔍 Searching for Dockerfiles..."
+          DOCKERFILES=$(find . -type f \( -iname "dockerfile" -o -iname "Dockerfile" \) ! -iname "*.old" | sort)
+          
+          echo "Found Dockerfiles:"
+          echo "$DOCKERFILES"
+          echo ""
+          
+          # Create results JSON array
+          echo "Building all Docker images..."
+          JSON_RESULTS="["
+          FIRST=true
+          
+          for dockerfile in $DOCKERFILES; do
+            # Get directory path without ./ prefix
+            dir=$(dirname "$dockerfile" | sed 's|^\./||')
+            dockerfile_name=$(basename "$dockerfile")
+            
+            echo "📦 Building $dir..."
+            
+            # Determine the .old dockerfile name (try both cases)
+            OLD_DOCKERFILE=""
+            if [ -f "$dir/${dockerfile_name}.old" ]; then
+              OLD_DOCKERFILE="$dir/${dockerfile_name}.old"
+            elif [ -f "$dir/Dockerfile.old" ]; then
+              OLD_DOCKERFILE="$dir/Dockerfile.old"
+            elif [ -f "$dir/dockerfile.old" ]; then
+              OLD_DOCKERFILE="$dir/dockerfile.old"
+            fi
+            
+            # Build old image
+            OLD_SIZE="❌"
+            if [ -n "$OLD_DOCKERFILE" ]; then
+              OLD_SIZE=$(build_and_get_size "$OLD_DOCKERFILE" "test-old-${dir//\//-}")
+              echo "  📊 Old size: $OLD_SIZE"
+            else
+              echo "  ⚠️ No .old dockerfile found"
+            fi
+            
+            # Build optimized image
+            NEW_SIZE=$(build_and_get_size "$dockerfile" "test-new-${dir//\//-}")
+            echo "  📊 New size: $NEW_SIZE"
+            
+            # Add to JSON
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              JSON_RESULTS+=","
+            fi
+            JSON_RESULTS+="{\"name\":\"$dir\",\"old_size\":\"$OLD_SIZE\",\"new_size\":\"$NEW_SIZE\"}"
+            
+            echo "  ✅ Done!"
+            echo ""
+          done
+          
+          JSON_RESULTS+="]"
+          
+          # Save results to output
+          echo "results=$JSON_RESULTS" >> $GITHUB_OUTPUT
+          
+          # Also save to file for the next step
+          echo "$JSON_RESULTS" > build-results.json
+          
+          echo "🎉 All builds completed!"
+
+      - name: Upload build results
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-results
+          path: build-results.json
+
+  update-readme:
+    needs: build-images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build results
+        uses: actions/download-artifact@v4
+        with:
+          name: build-results
+
+      - name: Update README with results
+        run: |
+          # Read results
+          RESULTS=$(cat build-results.json)
+          
+          # Generate markdown table
+          TABLE="| Imagen | Dockerfile.old | Dockerfile (Optimizado) |\n"
+          TABLE+="|--------|----------------|-------------------------|\n"
+          
+          # Parse JSON and create table rows
+          echo "$RESULTS" | jq -r '.[] | "| \(.name) | \(.old_size) | \(.new_size) |"' | while read line; do
+            TABLE+="$line\n"
+          done
+          
+          # Create the full table with jq
+          FULL_TABLE=$(echo "$RESULTS" | jq -r '
+            "| Imagen | Dockerfile.old | Dockerfile (Optimizado) |\n|--------|----------------|-------------------------|\n" + 
+            (map("| \(.name) | \(.old_size) | \(.new_size) |") | join("\n"))
+          ')
+          
+          # Read current README
+          README_CONTENT=$(cat README.md)
+          
+          # Check if the results section already exists
+          if grep -q "<!-- DOCKER_BUILD_RESULTS_START -->" README.md; then
+            # Replace existing section
+            awk '
+              /<!-- DOCKER_BUILD_RESULTS_START -->/ {
+                print
+                print ""
+                print "'"$(echo "$FULL_TABLE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')"'"
+                print ""
+                skip=1
+                next
+              }
+              /<!-- DOCKER_BUILD_RESULTS_END -->/ {
+                skip=0
+              }
+              !skip {print}
+            ' README.md > README.tmp && mv README.tmp README.md
+          else
+            # Append new section at the end
+            echo "" >> README.md
+            echo "## 📊 Comparativa de tamaños de imágenes Docker" >> README.md
+            echo "" >> README.md
+            echo "Esta tabla muestra la diferencia de tamaño entre los Dockerfiles sin optimizar (\`.old\`) y los Dockerfiles optimizados con multi-stage builds y mejores prácticas." >> README.md
+            echo "" >> README.md
+            echo "<!-- DOCKER_BUILD_RESULTS_START -->" >> README.md
+            echo "" >> README.md
+            echo "$FULL_TABLE" >> README.md
+            echo "" >> README.md
+            echo "<!-- DOCKER_BUILD_RESULTS_END -->" >> README.md
+            echo "" >> README.md
+            echo "> 🤝 **¿Quieres contribuir?** Añade tus propios ejemplos y ayuda a la comunidad a ver el impacto de las buenas prácticas en Docker." >> README.md
+            echo "" >> README.md
+            echo "_Última actualización: $(date -u '+%Y-%m-%d %H:%M:%S UTC')_" >> README.md
+          fi
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add README.md
+          git diff --staged --quiet || git commit -m "📊 Update Docker image size comparison table"
+          git push
