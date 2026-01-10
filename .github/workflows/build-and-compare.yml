@@ -238,9 +238,8 @@ jobs:
           echo "README updated!"
 
       - name: Commit and push changes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           # Configure git
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -251,6 +250,9 @@ jobs:
             echo "No changes to commit"
             exit 0
           fi
+          
+          # Configure remote with PAT for push
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git
           
           # Commit and push directly to main
           git add README.md
