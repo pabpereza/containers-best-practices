@@ -1,9 +1,8 @@
-name: Build and Compare Docker Images
+name: PR - Build and Compare Docker Images
 
 on:
-  push:
+  pull_request:
     branches: [main]
-  workflow_dispatch:
 
 jobs:
   # Job 1: Discover all Dockerfiles and create the build matrix
@@ -149,15 +148,61 @@ jobs:
           name: result-${{ strategy.job-index }}
           path: results/*.json
 
-  # Job 3: Aggregate results and update README
-  update-readme:
+  # Job 3: Compare results and comment on PR
+  compare-and-comment:
     needs: build
     runs-on: ubuntu-latest
     if: always()
     permissions:
-      contents: write
+      pull-requests: write
+      contents: read
     steps:
       - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+
+      - name: Extract current README table
+        id: current_table
+        run: |
+          echo "📖 Extracting current table from README..."
+          
+          # Extract JSON-like data from current README table
+          if grep -q "<!-- DOCKER_BUILD_RESULTS_START -->" README.md; then
+            # Get table content between markers
+            CURRENT_TABLE=$(sed -n '/<!-- DOCKER_BUILD_RESULTS_START -->/,/<!-- DOCKER_BUILD_RESULTS_END -->/p' README.md | grep "^|" | tail -n +3)
+            echo "Current table found:"
+            echo "$CURRENT_TABLE"
+            
+            # Parse table into JSON
+            CURRENT_JSON="["
+            FIRST=true
+            while IFS='|' read -r _ name old_size new_size build_time _; do
+              name=$(echo "$name" | xargs)
+              old_size=$(echo "$old_size" | xargs)
+              new_size=$(echo "$new_size" | xargs)
+              build_time=$(echo "$build_time" | xargs)
+              
+              if [ -n "$name" ] && [ "$name" != "Imagen" ] && [ "$name" != "--------" ]; then
+                if [ "$FIRST" = true ]; then
+                  FIRST=false
+                else
+                  CURRENT_JSON+=","
+                fi
+                CURRENT_JSON+="{\"name\":\"$name\",\"old_size\":\"$old_size\",\"new_size\":\"$new_size\",\"build_time\":\"$build_time\"}"
+              fi
+            done <<< "$CURRENT_TABLE"
+            CURRENT_JSON+="]"
+            
+            echo "$CURRENT_JSON" > current-results.json
+            echo "Parsed JSON:"
+            cat current-results.json
+          else
+            echo "[]" > current-results.json
+            echo "No existing table found in README"
+          fi
+
+      - name: Checkout PR branch
         uses: actions/checkout@v4
 
       - name: Download all result artifacts
@@ -167,10 +212,10 @@ jobs:
           path: all-results
           merge-multiple: true
 
-      - name: Aggregate results and generate table
-        id: aggregate
+      - name: Generate comparison comment
+        id: compare
         run: |
-          echo "📊 Aggregating results..."
+          echo "📊 Generating comparison..."
           
           # Combine all JSON files into one array
           COMBINED="["
@@ -190,69 +235,96 @@ jobs:
           
           COMBINED+="]"
           
-          echo "Combined results:"
+          echo "New results:"
           echo "$COMBINED" | jq .
           
-          # Sort by name and generate table
-          FULL_TABLE=$(echo "$COMBINED" | jq -r '
+          # Save new results
+          echo "$COMBINED" > new-results.json
+          
+          # Generate new table
+          NEW_TABLE=$(echo "$COMBINED" | jq -r '
             sort_by(.name) |
             "| Imagen | Dockerfile.old | Dockerfile (Optimizado) | Tiempo de Build |\n|--------|----------------|-------------------------|-----------------|\n" + 
             (map("| \(.name) | \(.old_size) | \(.new_size) | \(.build_time) |") | join("\n"))
           ')
           
-          echo "Generated table:"
-          echo "$FULL_TABLE"
-          
-          # Save table to file for next step
-          echo "$FULL_TABLE" > table.md
+          # Check if current-results.json exists and has data
+          if [ -f "current-results.json" ] && [ "$(cat current-results.json)" != "[]" ]; then
+            CURRENT_TABLE=$(cat current-results.json | jq -r '
+              sort_by(.name) |
+              "| Imagen | Dockerfile.old | Dockerfile (Optimizado) | Tiempo de Build |\n|--------|----------------|-------------------------|-----------------|\n" + 
+              (map("| \(.name) | \(.old_size) | \(.new_size) | \(.build_time) |") | join("\n"))
+            ')
+            
+            COMMENT="## 📊 Comparativa de construcción de imágenes Docker
 
-      - name: Update README
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          FULL_TABLE=$(cat table.md)
-          
-          # Check if the results section already exists
-          if grep -q "<!-- DOCKER_BUILD_RESULTS_START -->" README.md; then
-            # Create new content between markers
-            {
-              sed -n '1,/<!-- DOCKER_BUILD_RESULTS_START -->/p' README.md
-              echo ""
-              echo "$FULL_TABLE"
-              echo ""
-              sed -n '/<!-- DOCKER_BUILD_RESULTS_END -->/,$p' README.md
-            } > README.tmp && mv README.tmp README.md
+### 🆕 Resultados de esta PR
+
+$NEW_TABLE
+
+### 📌 Resultados actuales en \`main\`
+
+$CURRENT_TABLE
+
+---
+_Esta comparativa se genera automáticamente para cada PR._"
           else
-            # Append new section before "How contribute" section
-            echo "" >> README.md
-            echo "## 📊 Comparativa de tamaños de imágenes Docker" >> README.md
-            echo "" >> README.md
-            echo "Esta tabla muestra la diferencia de tamaño entre los Dockerfiles sin optimizar (\`.old\`) y los Dockerfiles optimizados." >> README.md
-            echo "" >> README.md
-            echo "<!-- DOCKER_BUILD_RESULTS_START -->" >> README.md
-            echo "" >> README.md
-            echo "$FULL_TABLE" >> README.md
-            echo "" >> README.md
-            echo "<!-- DOCKER_BUILD_RESULTS_END -->" >> README.md
-          fi
-          
-          echo "README updated!"
+            COMMENT="## 📊 Resultados de construcción de imágenes Docker
 
-      - name: Commit and push changes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Configure git
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # Check if there are changes
-          if git diff --quiet README.md; then
-            echo "No changes to commit"
-            exit 0
+$NEW_TABLE
+
+> ℹ️ No se encontró tabla de referencia en el README de \`main\`. Esta será la primera tabla.
+
+---
+_Esta comparativa se genera automáticamente para cada PR._"
           fi
           
-          # Commit and push directly to main
-          git add README.md
-          git commit -m "📊 Update Docker image size comparison table"
-          git push
+          # Save comment to file (using heredoc to preserve newlines)
+          cat << 'EOF' > comment.md
+          $COMMENT
+          EOF
+          
+          # Actually write the comment properly
+          echo "$COMMENT" > comment.md
+          
+          echo "Comment generated:"
+          cat comment.md
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const comment = fs.readFileSync('comment.md', 'utf8');
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && 
+              c.body.includes('📊 Comparativa de construcción') || c.body.includes('📊 Resultados de construcción')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+              console.log('Updated existing comment');
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+              console.log('Created new comment');
+            }
