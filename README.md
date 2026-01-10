@@ -10,8 +10,16 @@ Esta tabla muestra la diferencia de tamaño entre los Dockerfiles sin optimizar 
 <!-- DOCKER_BUILD_RESULTS_START -->
 
 | Imagen | Dockerfile.old | Dockerfile (Optimizado) | Tiempo de Build |
-|--------|----------------|-------------------------|------------------|
-| _Pendiente de ejecución del workflow_ | - | - | - |
+|--------|----------------|-------------------------|-----------------|
+| go/simple | 841MB | 1.81MB | 17s |
+| go/simple_with_packages | 845MB | 1.81MB | 20s |
+| java/maven | 678MB | Build Failed | - |
+| java/simple | 276MB | 184MB | 6s |
+| node/backend | 1.13GB | 79.1MB | 9s |
+| node/nextjs | ❌ | 62.2MB | 27s |
+| python/flask | 873MB | 89.2MB | 41s |
+| python/simple | ❌ | 873MB | 39s |
+| rust/simple | 1.64GB | 8.98MB | 12s |
 
 <!-- DOCKER_BUILD_RESULTS_END -->
 
