@@ -1,8 +1,0 @@
-# The build-stage image:
-FROM continuumio/miniconda3 AS build
-
-# Install the package as normal:
-COPY requirements.txt .
-
-
-RUN conda install -c conda-forge --file requirements.txt

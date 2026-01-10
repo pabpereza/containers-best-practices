@@ -83,13 +83,32 @@ jobs:
           
           IMAGE_NAME="test-new-$(echo '${{ matrix.dir }}' | tr '/' '-')"
           
+          # Measure build time
+          START_TIME=$(date +%s)
+          
           if docker build -t "$IMAGE_NAME" -f "${{ matrix.dir }}/${{ matrix.dockerfile }}" "${{ matrix.dir }}"; then
+            END_TIME=$(date +%s)
+            BUILD_TIME=$((END_TIME - START_TIME))
+            
+            # Format time as minutes:seconds
+            MINUTES=$((BUILD_TIME / 60))
+            SECONDS=$((BUILD_TIME % 60))
+            if [ $MINUTES -gt 0 ]; then
+              TIME_STR="${MINUTES}m ${SECONDS}s"
+            else
+              TIME_STR="${SECONDS}s"
+            fi
+            
             SIZE=$(docker images --format "{{.Size}}" "$IMAGE_NAME")
             echo "size=$SIZE" >> $GITHUB_OUTPUT
-            echo "✅ Built successfully: $SIZE"
+            echo "time=$TIME_STR" >> $GITHUB_OUTPUT
+            echo "✅ Built successfully: $SIZE in $TIME_STR"
           else
+            END_TIME=$(date +%s)
+            BUILD_TIME=$((END_TIME - START_TIME))
             echo "size=Build Failed" >> $GITHUB_OUTPUT
-            echo "❌ Build failed"
+            echo "time=-" >> $GITHUB_OUTPUT
+            echo "❌ Build failed after ${BUILD_TIME}s"
           fi
 
       - name: Build old Dockerfile
@@ -115,6 +134,7 @@ jobs:
           
           NEW_SIZE="${{ steps.build_new.outputs.size }}"
           OLD_SIZE="${{ steps.build_old.outputs.size }}"
+          BUILD_TIME="${{ steps.build_new.outputs.time }}"
           
           # If no old dockerfile, mark as ❌
           if [ "${{ matrix.has_old }}" != "true" ]; then
@@ -123,7 +143,7 @@ jobs:
           
           # Create result JSON with safe filename
           SAFE_NAME=$(echo '${{ matrix.dir }}' | tr '/' '-')
-          echo "{\"name\":\"${{ matrix.dir }}\",\"old_size\":\"$OLD_SIZE\",\"new_size\":\"$NEW_SIZE\"}" > "results/${SAFE_NAME}.json"
+          echo "{\"name\":\"${{ matrix.dir }}\",\"old_size\":\"$OLD_SIZE\",\"new_size\":\"$NEW_SIZE\",\"build_time\":\"$BUILD_TIME\"}" > "results/${SAFE_NAME}.json"
 
       - name: Upload result artifact
         uses: actions/upload-artifact@v4
@@ -178,8 +198,8 @@ jobs:
           # Sort by name and generate table
           FULL_TABLE=$(echo "$COMBINED" | jq -r '
             sort_by(.name) |
-            "| Imagen | Dockerfile.old | Dockerfile (Optimizado) |\n|--------|----------------|-------------------------|\n" + 
-            (map("| \(.name) | \(.old_size) | \(.new_size) |") | join("\n"))
+            "| Imagen | Dockerfile.old | Dockerfile (Optimizado) | Tiempo de Build |\n|--------|----------------|-------------------------|-----------------|\n" + 
+            (map("| \(.name) | \(.old_size) | \(.new_size) | \(.build_time) |") | join("\n"))
           ')
           
           echo "Generated table:"

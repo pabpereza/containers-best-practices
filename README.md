@@ -52,9 +52,9 @@ Esta tabla muestra la diferencia de tamaño entre los Dockerfiles sin optimizar 
 
 <!-- DOCKER_BUILD_RESULTS_START -->
 
-| Imagen | Dockerfile.old | Dockerfile (Optimizado) |
-|--------|----------------|-------------------------|
-| _Pendiente de ejecución del workflow_ | - | - |
+| Imagen | Dockerfile.old | Dockerfile (Optimizado) | Tiempo de Build |
+|--------|----------------|-------------------------|------------------|
+| _Pendiente de ejecución del workflow_ | - | - | - |
 
 <!-- DOCKER_BUILD_RESULTS_END -->
 
