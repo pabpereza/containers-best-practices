@@ -1,4 +1,4 @@
-FROM node:lts-alpine AS builder 
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -7,7 +7,7 @@ COPY --chown=node:node ./package*.json .
 RUN npm install ci 
 COPY . .
 
-FROM alpine AS runner 
+FROM alpine:3.20 AS runner
 
 RUN apk add --update --no-cache nodejs
 USER node

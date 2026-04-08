@@ -1,4 +1,4 @@
-FROM rust:alpine AS builder
+FROM rust:1.82-alpine AS builder
 
 WORKDIR /workspace
 
@@ -6,7 +6,7 @@ COPY . .
 
 RUN cargo install --path .
 
-FROM alpine 
+FROM alpine:3.20
 
 WORKDIR /app
 

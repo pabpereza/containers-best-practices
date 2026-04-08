@@ -1,7 +1,7 @@
-FROM alpine AS builder
+FROM alpine:3.20 AS builder
 
 # Install dependencies
-RUN apk add openjdk11 
+RUN apk add openjdk21
 
 # Move code
 WORKDIR /app

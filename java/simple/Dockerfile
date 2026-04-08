@@ -2,7 +2,7 @@ FROM alpine:3 AS builder
 
 
 # Install dependencies
-RUN apk add openjdk11 
+RUN apk add openjdk21 
 
 # Move code
 WORKDIR /app
@@ -15,7 +15,7 @@ RUN javac Hello.java
 FROM alpine:3 
 
 # Install jre
-RUN apk add openjdk11-jre
+RUN apk add openjdk21-jre-headless
 
 # Add new user and group
 RUN addgroup -S app && adduser -S app -G app

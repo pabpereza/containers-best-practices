@@ -1,4 +1,4 @@
-FROM rust
+FROM rust:1.82
 
 WORKDIR /workspace
 

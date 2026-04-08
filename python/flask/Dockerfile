@@ -1,4 +1,4 @@
-FROM python:slim AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /workspace
 
@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --user -r requirements.txt
 
 
-FROM alpine:3 AS runner
+FROM alpine:3.20 AS runner
 
 
 # Install python

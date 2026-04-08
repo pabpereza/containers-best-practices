@@ -1,4 +1,4 @@
-FROM node:lts-alpine as builder
+FROM node:22-alpine AS builder
 
 # Create app directory
 WORKDIR /app
@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build && npm run export
 
 
-FROM nginx:alpine
+FROM nginx:1.27-alpine
 
 # Copy static assets from builder stage
 COPY --chown=nginx:nginx --from=builder /app/out /usr/share/nginx/html
