@@ -16,18 +16,11 @@ COPY src/ .
 # Build the application using Maven
 RUN mvn package 
 
-# Use an official Eclipse Temurin runtime as a parent image
-FROM eclipse-temurin:21-jre
+FROM gcr.io/distroless/java21-debian13
 
-# Set the working directory to /app
 WORKDIR /app
 
-RUN useradd -ms /bin/bash apiuser 
-USER apiuser
+COPY --from=build /app/target/App.jar .
 
-# Copy the executable JAR file from the build stage to the working directory
-COPY --chown=apiuser --from=build /app/target/App.jar .
-
-# Set the command to run the application when the container starts
-CMD ["java", "-jar", "App.jar"]
+CMD ["main.jar"]
 
